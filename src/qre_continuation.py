@@ -160,42 +160,56 @@ class QREContinuation:
         return tangent / np.linalg.norm(tangent)
     
     def corrector_step(self, m_pred: np.ndarray, m_prev: np.ndarray, 
-                      t_prev: np.ndarray, h: float, max_iter: int = 500) -> Optional[np.ndarray]:
+                      t_prev: np.ndarray, h: float, max_iter: int = 500) -> tuple:
         """
-        Corrector step using Newton's method on augmented system.
-        m = [λ, x1, x2]
+        Newton corrector for the augmented system with adaptive damping.
+        Returns (m_new, newton_iters) or (None, None) on failure.
         """
+        from numpy.linalg import LinAlgError
+        
         m_new = m_pred.copy()
         
-        for _ in range(max_iter):
-            # Evaluate residual
-            lambda_val = m_new[0]
-            x = m_new[1:3]
-            F = self.residual_reduced(lambda_val, x)
+        for it in range(max_iter):
+            lam, x = m_new[0], m_new[1:3]
+            F = self.residual_reduced(lam, x)           # shape (2,)
+            c = t_prev @ (m_new - m_prev) - h           # scalar
+            # Prevent division by very small h
+            scale = max(h, 1e-10)
+            R = np.hstack((F, c / scale))
             
-            # Arclength constraint
-            c = np.dot(t_prev, m_new - m_prev) - h
+            if np.linalg.norm(R, np.inf) < self.tol:
+                return m_new, it                         # converged
             
-            # Combined residual
-            R = np.concatenate([F, [c]])
+            J = self.jacobian_analytical(lam, x)         # (2×3)
+            J_aug = np.vstack((J, t_prev.reshape(1, -1)))  # (3×3)
             
-            if np.max(np.abs(R)) < self.tol:
-                return m_new
-            
-            J = self.jacobian_analytical(lambda_val, x)
-            J_aug = np.vstack([J, t_prev.reshape(1, -1)])
-            
-            # Newton step
             try:
-                delta_m = solve(J_aug, R)
-                m_new -= 0.2 * delta_m
-                
-                if np.linalg.norm(delta_m) < self.tol:
-                    return m_new
-            except:
-                return None
-                
-        return None if np.max(np.abs(R)) > self.tol else m_new
+                delta = solve(J_aug, -R)                 # Newton equation: J @ delta = -R
+            # except (LinAlgError, ValueError):
+            except LinAlgError:
+                return None, None                        # singular => possible bifurcation
+            
+            step = 1.0
+            while step > 1e-3:                        # Armijo loop
+                cand = m_new + step * delta
+                lam_c, x_c = cand[0], cand[1:3]
+                # stay in simplex
+                if (x_c[0] < -1e-12 or x_c[1] < -1e-12 or x_c.sum() > 1 + 1e-12):
+                    step *= 0.5
+                    continue
+                F_c = self.residual_reduced(lam_c, x_c)
+                c_c = t_prev @ (cand - m_prev) - h
+                R_c = np.hstack((F_c, c_c / scale))
+                if np.linalg.norm(R_c, np.inf) < np.linalg.norm(R, np.inf):
+                    m_new, R = cand, R_c             # accept & refresh
+                    break
+                step *= 0.5
+            else:
+                return None, None
+
+            if step * np.linalg.norm(delta) < self.tol:  # scaled step size (C-3)
+                return m_new, it + 1
+        return (m_new, max_iter) if np.linalg.norm(R, np.inf) < self.tol else (None, None)
     
     def trace_branch(self, m0: np.ndarray, t0: np.ndarray, 
                     lambda_max: float = 50.0, h0: float = 0.005, 
@@ -203,10 +217,15 @@ class QREContinuation:
         """
         Trace a single branch starting from m0 with initial tangent t0.
         """
+        # Constants for boundary and loop detection
+        LOOP_TOL = 1e-7  # loop detection tolerance  
+        MAX_H = 0.05      # absolute cap on step length
+
         branch = []
         m = m0.copy()
         t = t0.copy()
         h = h0
+        newton_history = []
         
         # Add initial point
         branch.append(self._make_qre_point(m))
@@ -216,7 +235,7 @@ class QREContinuation:
             m_pred = m + h * t
             
             # Corrector
-            m_new = self.corrector_step(m_pred, m, t, h)
+            m_new, nit = self.corrector_step(m_pred, m, t, h)
             
             if m_new is None:
                 # Failed to converge, reduce step size
@@ -235,6 +254,13 @@ class QREContinuation:
             # Check if we're still in the simplex
             if x[0] < -self.tol or x[1] < -self.tol or x[0] + x[1] > 1 + self.tol:
                 break
+
+            # Reconstruct full probability vector
+            pi1 = np.array([m_new[1], m_new[2], 1 - m_new[1] - m_new[2]])
+            
+            # Loop detection (T-4)
+            if any(np.linalg.norm(pi1 - q.pi1, np.inf) < LOOP_TOL for q in branch):
+                break
             
             # Accept step
             branch.append(self._make_qre_point(m_new))
@@ -250,8 +276,8 @@ class QREContinuation:
             t = t_new
             
             # Adaptive step size (more conservative)
+            # TODO: Can there be an adaptive step size? Perhaps check what Bland & Turocy (2024) do.
             h = min(0.05, h * 1.1)
-            
         return branch
     
     def _make_qre_point(self, m: np.ndarray) -> QREPoint:
@@ -275,29 +301,34 @@ class QREContinuation:
         """
         m_proj = m.copy()
         
+        lambda_val = m_proj[0]
         for _ in range(max_iter):
-            # Evaluate residual
-            F = self.residual_reduced(m_proj[0], m_proj[1:3])
-            
+            F = self.residual_reduced(lambda_val, m_proj[1:3])
             if np.linalg.norm(F) < self.tol:
                 return m_proj
-            
-            # Jacobian with respect to strategy only (fix lambda)
-            J = self.jacobian_analytical(m_proj[0], m_proj[1:3])[:, 1:3]
-            
-            # Newton step
+            J = self.jacobian_analytical(lambda_val, m_proj[1:3])[:, 1:3]
+            # solve or pseudo‑inverse
             try:
                 delta = solve(J, -F)
-                m_proj[1:3] += delta
-                
-                # Ensure we stay in the simplex
-                if m_proj[1] < 0 or m_proj[2] < 0 or m_proj[1] + m_proj[2] > 1:
-                    return None
-                    
-                if np.linalg.norm(delta) < self.tol:
-                    return m_proj
-            except:
+            except np.linalg.LinAlgError:
+                delta = np.linalg.pinv(J) @ (-F)
+            step = 1.0
+            while step > 1e-3:
+                cand = m_proj.copy()
+                cand[1:3] += step * delta
+                if (cand[1] < 0) or (cand[2] < 0) or (cand[1]+cand[2] > 1):
+                    step *= 0.5
+                    continue
+                F_c = self.residual_reduced(lambda_val, cand[1:3])
+                if np.linalg.norm(F_c) < np.linalg.norm(F):
+                    m_proj = cand
+                    F = F_c
+                    break
+                step *= 0.5
+            else:
                 return None
+            if step * np.linalg.norm(delta) < self.tol:
+                return m_proj
                 
         return None
     
@@ -345,16 +376,17 @@ class QREContinuation:
         
         # 1. Principal branch from centroid
         m0 = np.array([0.0, 1/3, 1/3])
-        t0 = np.array([1.0, 0.0, 0.0])  # Start in positive lambda direction
+        try:
+            t0 = self.find_tangent(m0[0], m0[1:3])
+        except Exception:
+            # fallback: small λ
+            m0[0] = 1e-2
+            t0 = self.find_tangent(m0[0], m0[1:3])
         
-        branch = self.trace_branch(m0, t0, lambda_max)
-        if len(branch) > 1:
-            branches.append(branch)
-            
-        # Also trace backward from centroid
-        branch_back = self.trace_branch(m0, -t0, lambda_max)
-        if len(branch_back) > 1 and not self._is_duplicate_branch(branch_back, branches):
-            branches.append(branch_back)
+        for direction in (t0, -t0):
+            branch = self.trace_branch(m0, direction, lambda_max)
+            if len(branch) > 1 and not self._is_duplicate_branch(branch, branches):
+                branches.append(branch)
         
         # 2. Branches from Nash equilibria
         
@@ -363,7 +395,7 @@ class QREContinuation:
             start_lambda = 20.0
             max_attempts = 3
             
-            for attempt in range(max_attempts):
+            for _ in range(max_attempts):
                 m_nash = np.array([start_lambda, nash[0], nash[1]])
                 
                 # Project onto QRE manifold before computing tangent
@@ -378,15 +410,12 @@ class QREContinuation:
                     branch_found = False
                     
                     for direction in [t_nash, -t_nash]:
-                        
-                        # Only trace if moving toward lower lambda
-                        if direction[0] < 0:
-                            branch = self.trace_branch(m_nash_proj, direction, lambda_max)
-                            if len(branch) > 10:  # Significant branch
-                                # Check if this is a duplicate
-                                if not self._is_duplicate_branch(branch, branches):
-                                    branches.append(branch)
-                                    branch_found = True
+                        branch = self.trace_branch(m_nash_proj, direction, lambda_max)
+                        if len(branch) > 10:  # Significant branch
+                            # Check if this is a duplicate
+                            if not self._is_duplicate_branch(branch, branches):
+                                branches.append(branch)
+                                branch_found = True
                     
                     # If we found a branch, no need to try higher lambda values
                     if branch_found:
