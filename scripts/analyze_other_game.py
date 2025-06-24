@@ -64,8 +64,8 @@ def main():
         print(f"Lambda range: [{branch[0].lambda_val:.3f}, {branch[-1].lambda_val:.3f}]")
         
         # Check start and end points
-        print(f"Start: λ={branch[0].lambda_val:.3f}, π=[{branch[0].pi1[0]:.6f}, {branch[0].pi1[1]:.6f}, {branch[0].pi1[2]:.6f}]")
-        print(f"End:   λ={branch[-1].lambda_val:.3f}, π=[{branch[-1].pi1[0]:.6f}, {branch[-1].pi1[1]:.6f}, {branch[-1].pi1[2]:.6f}]")
+        print(f"Start: λ={branch[0].lambda_val:.3f}, π=[{branch[0].pi[0]:.6f}, {branch[0].pi[1]:.6f}, {branch[0].pi[2]:.6f}]")
+        print(f"End:   λ={branch[-1].lambda_val:.3f}, π=[{branch[-1].pi[0]:.6f}, {branch[-1].pi[1]:.6f}, {branch[-1].pi[2]:.6f}]")
         
         # Sample some points along the branch and verify
         print("\nSampling points along branch:")
@@ -76,7 +76,7 @@ def main():
         
         for idx in sample_indices:
             point = branch[idx]
-            error, qr, u = verify_qre_point(payoff_matrix, point.lambda_val, point.pi1)
+            error, qr, u = verify_qre_point(payoff_matrix, point.lambda_val, point.pi)
             
             if error > max_error:
                 max_error = error
@@ -84,7 +84,7 @@ def main():
             
             if error > 1e-3:  # Flag large errors
                 print(f"  idx={idx}, λ={point.lambda_val:.3f}: ERROR={error:.2e}")
-                print(f"    π = [{point.pi1[0]:.6f}, {point.pi1[1]:.6f}, {point.pi1[2]:.6f}]")
+                print(f"    π = [{point.pi[0]:.6f}, {point.pi[1]:.6f}, {point.pi[2]:.6f}]")
                 print(f"    QR= [{qr[0]:.6f}, {qr[1]:.6f}, {qr[2]:.6f}]")
                 print(f"    u = [{u[0]:.4f}, {u[1]:.4f}, {u[2]:.4f}]")
         
@@ -104,23 +104,23 @@ def main():
         print(f"Found {len(qre_solutions)} solutions")
         
         for j, qre in enumerate(qre_solutions):
-            error, qr, u = verify_qre_point(payoff_matrix, lambda_val, qre.pi1)
+            error, qr, u = verify_qre_point(payoff_matrix, lambda_val, qre.pi)
 
-            print(f"{j+1}. π = [{qre.pi1[0]:.6f}, {qre.pi1[1]:.6f}, {qre.pi1[2]:.6f}]")
+            print(f"{j+1}. π = [{qre.pi[0]:.6f}, {qre.pi[1]:.6f}, {qre.pi[2]:.6f}]")
             
             if error > 1e-4:
                 print(f"\n  Solution {j+1} has large error: {error:.2e}")
-                print(f"    π = [{qre.pi1[0]:.6f}, {qre.pi1[1]:.6f}, {qre.pi1[2]:.6f}]")
+                print(f"    π = [{qre.pi[0]:.6f}, {qre.pi[1]:.6f}, {qre.pi[2]:.6f}]")
                 print(f"    QR= [{qr[0]:.6f}, {qr[1]:.6f}, {qr[2]:.6f}]")
-                print(f"    Δ = [{qre.pi1[0]-qr[0]:.6f}, {qre.pi1[1]-qr[1]:.6f}, {qre.pi1[2]-qr[2]:.6f}]")
+                print(f"    Δ = [{qre.pi[0]-qr[0]:.6f}, {qre.pi[1]-qr[1]:.6f}, {qre.pi[2]-qr[2]:.6f}]")
                 print(f"    u = [{u[0]:.4f}, {u[1]:.4f}, {u[2]:.4f}]")
                 
                 # Check which branch this came from
                 for bi, branch in enumerate(branches):
                     for pi in range(len(branch)-1):
                         if branch[pi].lambda_val <= lambda_val <= branch[pi+1].lambda_val:
-                            dist1 = np.linalg.norm(branch[pi].pi1 - qre.pi1)
-                            dist2 = np.linalg.norm(branch[pi+1].pi1 - qre.pi1)
+                            dist1 = np.linalg.norm(branch[pi].pi - qre.pi)
+                            dist2 = np.linalg.norm(branch[pi+1].pi - qre.pi)
                             if dist1 < 0.1 or dist2 < 0.1:
                                 print(f"    From branch {bi+1}, between indices {pi} and {pi+1}")
                                 print(f"    Branch point errors:")
@@ -138,8 +138,8 @@ def main():
     fig, ax1 = plt.subplots(1, 1, figsize=(8, 8))
     # Plot branches in strategy space
     for i, branch in enumerate(branches):
-        pi1_vals = [p.pi1[0] for p in branch]
-        pi2_vals = [p.pi1[1] for p in branch]
+        pi1_vals = [p.pi[0] for p in branch]
+        pi2_vals = [p.pi[1] for p in branch]
         lambda_vals = [p.lambda_val for p in branch]
         
         # Color by lambda value
