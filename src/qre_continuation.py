@@ -7,22 +7,49 @@ import numpy as np
 from scipy.linalg import solve, svd
 from dataclasses import dataclass
 from typing import List, Optional
-import warnings
-warnings.filterwarnings('ignore')
+# import warnings
+# warnings.filterwarnings('ignore')
 
 
 @dataclass
 class QREPoint:
-    """Represents a point on a QRE branch."""
+    """Represents a point on a symmetric QRE branch."""
     lambda_val: float
-    pi1: np.ndarray  # Player 1 mixed strategy
-    pi2: np.ndarray  # Player 2 mixed strategy
+    pi: np.ndarray  # Mixed strategy (same for both players in symmetric game)
     
     
 class QREContinuation:
     """
-    Computes all QRE branches for a 3x3 symmetric game using continuation methods.
+    Computes symmetric QRE branches for a 3x3 symmetric game using continuation methods.
+    
+    In symmetric games, we look for symmetric equilibria where both players use the same
+    mixed strategy. This simplifies the computation as we only need to track one strategy
+    vector instead of two.
     """
+    
+    # Continuation algorithm parameters
+    DEFAULT_LAMBDA_FALLBACK = 1e-2      # λ value when centroid fails at λ=0
+    LOOP_DETECTION_TOL = 1e-7           # Tolerance for detecting revisited points
+    CONTINUATION_MAX_STEP_SIZE = 0.05   # Maximum continuation step size
+    CONTINUATION_MIN_STEP_SIZE = 1e-8   # Minimum step size before giving up
+    CONTINUATION_STEP_GROWTH = 1.1      # Step size growth rate
+    CONTINUATION_STEP_REDUCTION = 0.5   # Step size reduction on failure
+    
+    # Corrector step parameters (Newton-Raphson with Armijo line search)
+    CORRECTOR_ARMIJO_MIN_STEP = 1e-3    # Minimum Armijo line search step
+    CORRECTOR_STEP_REDUCTION = 0.5      # Step reduction factor in corrector
+    
+    # Projection parameters (Newton method for manifold projection)
+    PROJECTION_ARMIJO_MIN_STEP = 1e-3   # Minimum step in projection line search
+    PROJECTION_STEP_REDUCTION = 0.5     # Step reduction factor in projection
+    
+    # Nash equilibrium search parameters
+    NASH_INITIAL_LAMBDA = 20.0          # Starting λ for Nash equilibrium search
+    NASH_LAMBDA_INCREMENT = 10.0        # λ increment when projection fails
+    NASH_MAX_ATTEMPTS = 3               # Max attempts to find branch from Nash
+    
+    # Branch detection parameters
+    BRANCH_SIGNIFICANCE_THRESHOLD = 10  # Minimum branch length to be significant
     
     def __init__(self, payoff_matrix: np.ndarray, tol: float = 1e-12):
         """
@@ -79,15 +106,14 @@ class QREContinuation:
         # Reconstruct full probability vector
         pi = np.array([x[0], x[1], 1 - x[0] - x[1]])
         
-        # Expected payoffs
-        u = self.A @ pi
-        
         if lambda_val == 0:
             # Special case: when λ = 0, QR is uniform distribution
             J = np.zeros((2, 3))
-            
+
             # ∂F_i/∂λ at λ=0
             # QR = [1/3, 1/3, 1/3], so derivative involves u_i - mean(u)
+            # Expected payoffs
+            u = self.A @ pi
             u_mean = np.mean(u)
             for i in range(2):
                 J[i, 0] = -(u[i] - u_mean) / 3
@@ -100,13 +126,8 @@ class QREContinuation:
             return J
         
         # General case: λ > 0
-        # Compute exponentials with numerical stability
-        max_u = np.max(u)
-        exp_vals = np.exp(lambda_val * (u - max_u))
-        sum_exp = np.sum(exp_vals)
-        
         # Quantal response probabilities
-        qr = exp_vals / sum_exp
+        qr = self.quantal_response(lambda_val, pi)
         
         # Initialize Jacobian
         J = np.zeros((2, 3))
@@ -153,11 +174,15 @@ class QREContinuation:
         # The last column of V (last row of Vt) is the null vector
         tangent = Vt[-1, :]
         
-        # Normalize and ensure positive lambda direction initially
-        if tangent[0] < 0:
-            tangent = -tangent
+        # TODO: Some checks might be needed to handle bifurcations.
+        
+        # Check for zero norm (should not happen with proper SVD, but be safe)
+        tangent_norm = np.linalg.norm(tangent)
+        if tangent_norm < 1e-14:
+            raise ValueError(f"Zero tangent vector at λ={lambda_val}, x={x}. "
+                           "This may indicate a bifurcation point or numerical issues.")
             
-        return tangent / np.linalg.norm(tangent)
+        return tangent / tangent_norm
     
     def corrector_step(self, m_pred: np.ndarray, m_prev: np.ndarray, 
                       t_prev: np.ndarray, h: float, max_iter: int = 500) -> tuple:
@@ -172,9 +197,10 @@ class QREContinuation:
         for it in range(max_iter):
             lam, x = m_new[0], m_new[1:3]
             F = self.residual_reduced(lam, x)           # shape (2,)
+            # TODO: Double-check if subtracting h is correct.
             c = t_prev @ (m_new - m_prev) - h           # scalar
             # Prevent division by very small h
-            scale = max(h, 1e-10)
+            scale = max(h, 1e-6)
             R = np.hstack((F, c / scale))
             
             if np.linalg.norm(R, np.inf) < self.tol:
@@ -185,17 +211,25 @@ class QREContinuation:
             
             try:
                 delta = solve(J_aug, -R)                 # Newton equation: J @ delta = -R
-            # except (LinAlgError, ValueError):
             except LinAlgError:
-                return None, None                        # singular => possible bifurcation
+                # Singular augmented Jacobian - possible bifurcation point
+                # TODO: Handle bifurcation
+                return None, None
+            except ValueError as e:
+                # Invalid values in matrix (NaN, Inf) or dimension mismatch
+                # This indicates numerical issues that should not be silently ignored
+                raise ValueError(
+                    f"Invalid values in corrector step at λ={lam}, x={x}. "
+                    f"Check for NaN/Inf in Jacobian or residual. Error: {e}"
+                )
             
             step = 1.0
-            while step > 1e-3:                        # Armijo loop
+            while step > self.CORRECTOR_ARMIJO_MIN_STEP:  # Armijo loop
                 cand = m_new + step * delta
                 lam_c, x_c = cand[0], cand[1:3]
                 # stay in simplex
                 if (x_c[0] < -1e-12 or x_c[1] < -1e-12 or x_c.sum() > 1 + 1e-12):
-                    step *= 0.5
+                    step *= self.CORRECTOR_STEP_REDUCTION
                     continue
                 F_c = self.residual_reduced(lam_c, x_c)
                 c_c = t_prev @ (cand - m_prev) - h
@@ -203,7 +237,7 @@ class QREContinuation:
                 if np.linalg.norm(R_c, np.inf) < np.linalg.norm(R, np.inf):
                     m_new, R = cand, R_c             # accept & refresh
                     break
-                step *= 0.5
+                step *= self.CORRECTOR_STEP_REDUCTION
             else:
                 return None, None
 
@@ -217,9 +251,7 @@ class QREContinuation:
         """
         Trace a single branch starting from m0 with initial tangent t0.
         """
-        # Constants for boundary and loop detection
-        LOOP_TOL = 1e-7  # loop detection tolerance  
-        MAX_H = 0.05      # absolute cap on step length
+        # Use class constants for boundary and loop detection
 
         branch = []
         m = m0.copy()
@@ -239,8 +271,8 @@ class QREContinuation:
             
             if m_new is None:
                 # Failed to converge, reduce step size
-                h *= 0.5
-                if h < 1e-8:
+                h *= self.CONTINUATION_STEP_REDUCTION
+                if h < self.CONTINUATION_MIN_STEP_SIZE:
                     break
                 continue
             
@@ -254,13 +286,15 @@ class QREContinuation:
             # Check if we're still in the simplex
             if x[0] < -self.tol or x[1] < -self.tol or x[0] + x[1] > 1 + self.tol:
                 break
-
-            # Reconstruct full probability vector
-            pi1 = np.array([m_new[1], m_new[2], 1 - m_new[1] - m_new[2]])
             
-            # Loop detection (T-4)
-            if any(np.linalg.norm(pi1 - q.pi1, np.inf) < LOOP_TOL for q in branch):
-                break
+            # Loop detection temporarily disabled until fold/bifurcation handling is implemented
+            # Without proper fold handling, the algorithm can turn back on itself at folds,
+            # causing false positive loop detection
+            # TODO: Re-enable after implementing fold and bifurcation detection
+            # Reconstruct full probability vector
+            # pi = np.array([m_new[1], m_new[2], 1 - m_new[1] - m_new[2]])
+            # if any(np.linalg.norm(pi - q.pi, np.inf) < self.LOOP_DETECTION_TOL for q in branch):
+            #     break
             
             # Accept step
             branch.append(self._make_qre_point(m_new))
@@ -269,6 +303,7 @@ class QREContinuation:
             t_new = self.find_tangent(m_new[0], m_new[1:3])
             
             # Ensure continuity of tangent direction
+            # TODO: I guess we should handle this to implement bifurcation handling.
             if np.dot(t, t_new) < 0:
                 t_new = -t_new
                 
@@ -277,7 +312,7 @@ class QREContinuation:
             
             # Adaptive step size (more conservative)
             # TODO: Can there be an adaptive step size? Perhaps check what Bland & Turocy (2024) do.
-            h = min(0.05, h * 1.1)
+            h = min(self.CONTINUATION_MAX_STEP_SIZE, h * self.CONTINUATION_STEP_GROWTH)
         return branch
     
     def _make_qre_point(self, m: np.ndarray) -> QREPoint:
@@ -285,12 +320,12 @@ class QREContinuation:
         lambda_val = m[0]
         x = m[1:3]
         pi = np.array([x[0], x[1], 1 - x[0] - x[1]])
-        return QREPoint(lambda_val, pi, pi)  # Symmetric game
+        return QREPoint(lambda_val, pi)
     
     def _is_on_branch(self, point: np.ndarray, branch: List[QREPoint], tol: float = 1e-4) -> bool:
         """Check if a point is already on a branch."""
         for qre_point in branch:
-            if np.linalg.norm(qre_point.pi1[:2] - point[1:3]) < tol:
+            if np.linalg.norm(qre_point.pi[:2] - point[1:3]) < tol:
                 return True
         return False
     
@@ -313,18 +348,18 @@ class QREContinuation:
             except np.linalg.LinAlgError:
                 delta = np.linalg.pinv(J) @ (-F)
             step = 1.0
-            while step > 1e-3:
+            while step > self.PROJECTION_ARMIJO_MIN_STEP:
                 cand = m_proj.copy()
                 cand[1:3] += step * delta
                 if (cand[1] < 0) or (cand[2] < 0) or (cand[1]+cand[2] > 1):
-                    step *= 0.5
+                    step *= self.PROJECTION_STEP_REDUCTION
                     continue
                 F_c = self.residual_reduced(lambda_val, cand[1:3])
                 if np.linalg.norm(F_c) < np.linalg.norm(F):
                     m_proj = cand
                     F = F_c
                     break
-                step *= 0.5
+                step *= self.PROJECTION_STEP_REDUCTION
             else:
                 return None
             if step * np.linalg.norm(delta) < self.tol:
@@ -343,15 +378,15 @@ class QREContinuation:
         if len(new_branch) < 2:
             return False
             
-        new_start = new_branch[0].pi1
-        new_end = new_branch[-1].pi1
+        new_start = new_branch[0].pi
+        new_end = new_branch[-1].pi
         
         for existing in existing_branches:
             if len(existing) < 2:
                 continue
                 
-            exist_start = existing[0].pi1
-            exist_end = existing[-1].pi1
+            exist_start = existing[0].pi
+            exist_end = existing[-1].pi
             
             # Check all four combinations
             if (np.linalg.norm(new_start - exist_start) < endpoint_tol and 
@@ -378,10 +413,18 @@ class QREContinuation:
         m0 = np.array([0.0, 1/3, 1/3])
         try:
             t0 = self.find_tangent(m0[0], m0[1:3])
-        except Exception:
-            # fallback: small λ
-            m0[0] = 1e-2
-            t0 = self.find_tangent(m0[0], m0[1:3])
+        except (np.linalg.LinAlgError, ValueError, ZeroDivisionError) as e:
+            # At λ=0, the Jacobian may be singular or ill-conditioned
+            # Fallback: use small positive λ where the system is better behaved
+            m0[0] = self.DEFAULT_LAMBDA_FALLBACK
+            try:
+                t0 = self.find_tangent(m0[0], m0[1:3])
+            except (np.linalg.LinAlgError, ValueError, ZeroDivisionError) as e2:
+                raise ValueError(
+                    f"Unable to compute tangent at centroid even with λ={m0[0]}. "
+                    f"This may indicate a degenerate game structure. "
+                    f"Original error: {e}, Fallback error: {e2}"
+                )
         
         for direction in (t0, -t0):
             branch = self.trace_branch(m0, direction, lambda_max)
@@ -392,8 +435,8 @@ class QREContinuation:
         
         for nash in nash_equilibria:
             # Start from high lambda near Nash, but adaptively try higher values if needed
-            start_lambda = 20.0
-            max_attempts = 3
+            start_lambda = self.NASH_INITIAL_LAMBDA
+            max_attempts = self.NASH_MAX_ATTEMPTS
             
             for _ in range(max_attempts):
                 m_nash = np.array([start_lambda, nash[0], nash[1]])
@@ -401,7 +444,7 @@ class QREContinuation:
                 # Project onto QRE manifold before computing tangent
                 m_nash_proj = self._project_onto_manifold(m_nash)
                 if m_nash_proj is None:
-                    start_lambda += 10.0
+                    start_lambda += self.NASH_LAMBDA_INCREMENT
                     continue
                 
                 # Try both tangent directions
@@ -411,7 +454,7 @@ class QREContinuation:
                     
                     for direction in [t_nash, -t_nash]:
                         branch = self.trace_branch(m_nash_proj, direction, lambda_max)
-                        if len(branch) > 10:  # Significant branch
+                        if len(branch) > self.BRANCH_SIGNIFICANCE_THRESHOLD:  # Significant branch
                             # Check if this is a duplicate
                             if not self._is_duplicate_branch(branch, branches):
                                 branches.append(branch)
@@ -421,11 +464,14 @@ class QREContinuation:
                     if branch_found:
                         break
                         
-                except:
+                except (np.linalg.LinAlgError, ValueError, ArithmeticError):
+                    # Could not find tangent or trace branch from this Nash equilibrium
+                    # This is expected for some Nash equilibria
+                    # The loop will continue and try with a higher lambda value
                     pass
                 
                 # Try higher lambda for next attempt
-                start_lambda += 10.0
+                start_lambda += self.NASH_LAMBDA_INCREMENT
                     
         return branches
     
@@ -436,6 +482,8 @@ class QREContinuation:
         qre_solutions = []
         
         for branch in branches:
+            # We can encounter max 2 lambda intervals per branch. So we keep track of it.
+            lambda_interval_count = 0
             # Find points that bracket target_lambda
             for i in range(len(branch) - 1):
                 lambda1 = branch[i].lambda_val
@@ -443,21 +491,39 @@ class QREContinuation:
                 
                 # Check if target_lambda is between these points
                 if (lambda1 <= target_lambda <= lambda2) or (lambda2 <= target_lambda <= lambda1):
-                    # Linear interpolation
-                    t = (target_lambda - lambda1) / (lambda2 - lambda1)
-                    pi1_interp = (1 - t) * branch[i].pi1 + t * branch[i + 1].pi1
-                    pi2_interp = (1 - t) * branch[i].pi2 + t * branch[i + 1].pi2
-
-                    # TODO: Would it make sense to project this into QRE manifold?
+                    lambda_interval_count += 1
+                    # Determine candidate solution
+                    if abs(lambda2 - lambda1) < 1e-6:
+                        # Lambda values are essentially identical, use the first point directly
+                        pi_candidate = branch[i].pi
+                    else:
+                        # Linear interpolation as initial guess
+                        t = (target_lambda - lambda1) / (lambda2 - lambda1)
+                        pi_interp = (1 - t) * branch[i].pi + t * branch[i + 1].pi
+                        
+                        # Project the interpolated point onto the QRE manifold
+                        m_interp = np.array([target_lambda, pi_interp[0], pi_interp[1]])
+                        m_projected = self._project_onto_manifold(m_interp)
+                        
+                        if m_projected is not None:
+                            # Successfully projected onto manifold
+                            pi_candidate = np.array([m_projected[1], m_projected[2], 1 - m_projected[1] - m_projected[2]])
+                        else:
+                            # Projection failed, use interpolated point
+                            pi_candidate = pi_interp
                     
                     # Check if this is a new solution
                     is_new = True
                     for sol in qre_solutions:
-                        if np.linalg.norm(sol.pi1 - pi1_interp) < 1e-1:
+                        if np.linalg.norm(sol.pi - pi_candidate) < 1e-2:
                             is_new = False
                             break
                             
                     if is_new:
-                        qre_solutions.append(QREPoint(target_lambda, pi1_interp, pi2_interp))
+                        qre_solutions.append(QREPoint(target_lambda, pi_candidate))
+                    
+                    # Found the bracket, no need to continue searching this branch
+                    if lambda_interval_count == 2:
+                        break
                         
         return qre_solutions
