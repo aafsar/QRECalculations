@@ -121,7 +121,7 @@ def main():
                             dist2 = np.linalg.norm(branch[pi+1].pi - qre.pi)
                             if dist1 < 0.1 or dist2 < 0.1:
                                 print(f"    From branch {bi+1}, between indices {pi} and {pi+1}")
-                                print(f"    Branch point errors:")
+                                print("    Branch point errors:")
                                 e1, _, _ = verify_qre_point(payoff_matrix, branch[pi].lambda_val, branch[pi].pi)
                                 e2, _, _ = verify_qre_point(payoff_matrix, branch[pi+1].lambda_val, branch[pi+1].pi)
                                 print(f"      Point {pi}: λ={branch[pi].lambda_val:.3f}, error={e1:.2e}")
@@ -133,14 +133,13 @@ def main():
     print("Creating branch visualization...")
     
     #fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 6))
-    fig, ax1 = plt.subplots(1, 1, figsize=(8, 8))
+    _, ax1 = plt.subplots(1, 1, figsize=(8, 8))
     # Plot branches in strategy space
     for i, branch in enumerate(branches):
         pi1_vals = [p.pi[0] for p in branch]
         pi2_vals = [p.pi[1] for p in branch]
-        lambda_vals = [p.lambda_val for p in branch]
         
-        sc = ax1.scatter(pi1_vals, pi2_vals, s=5, label=f'Branch {i+1}')
+        ax1.scatter(pi1_vals, pi2_vals, s=5, label=f'Branch {i+1}')
         # Color by lambda value
         #sc = ax1.scatter(pi1_vals, pi2_vals, c=lambda_vals,
         #                 s=5, cmap='viridis', alpha=0.7, label=f'Branch {i+1}')

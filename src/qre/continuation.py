@@ -9,7 +9,7 @@ finds all solution branches by starting from both the centroid and Nash equilibr
 import numpy as np
 from scipy.linalg import solve, svd
 from dataclasses import dataclass
-from typing import List, Optional, Set, Tuple
+from typing import List, Optional
 
 from .nash import find_nash_with_pygambit
 
@@ -352,9 +352,7 @@ class QREContinuation:
     
     def trace_branch(self, start_point: np.ndarray, start_tangent: np.ndarray, 
                     lambda_max: float = 50.0, initial_step: float = 0.001, 
-                    max_steps: int = 20000,
-                    branches: Optional[List[List[QREPoint]]] = None,
-                    visited: Optional[Set[Tuple]] = None) -> List[QREPoint]:
+                    max_steps: int = 20000) -> List[QREPoint]:
         """
         Trace a QRE branch using predictor-corrector continuation.
         
@@ -367,8 +365,6 @@ class QREContinuation:
             lambda_max: Maximum lambda value to trace
             initial_step: Initial step size
             max_steps: Maximum number of continuation steps
-            branches: Existing branches (for bifurcation detection)
-            visited: Set of visited branch keys
             
         Returns:
             List of QREPoints forming the branch
@@ -382,7 +378,7 @@ class QREContinuation:
         # Add initial point
         branch.append(self._make_qre_point(current_point))
         
-        for step_num in range(max_steps):
+        for _ in range(max_steps):
             # Adaptive step size parameters
             max_step_local = self.MAX_STEP_SIZE
             
@@ -390,7 +386,7 @@ class QREContinuation:
             predicted_point = current_point + step_size * current_tangent
             
             # Corrector step
-            corrected_point, iterations = self.corrector_step(
+            corrected_point, _ = self.corrector_step(
                 predicted_point, current_point, current_tangent, step_size
             )
             
@@ -433,7 +429,7 @@ class QREContinuation:
             if strategy_component_norm < 1e-5:
                 # Aggressive acceleration near Nash
                 if strategy_component_norm > 1e-10:
-                    max_step_local = min(1.0, 0.1 / strategy_component_norm)
+                    max_step_local = min(1.0, float(0.1 / strategy_component_norm))
                 else:
                     max_step_local = 1.0
                 growth_factor = 2.0
@@ -615,7 +611,7 @@ class QREContinuation:
             True if Nash is a QRE limit point
         """
         qr = self.quantal_response(lambda_test, nash)
-        return np.linalg.norm(nash - qr) < 1e-3
+        return bool(np.linalg.norm(nash - qr) < 1e-3)
     
     def find_closest_nash(self, point: QREPoint, nash_list: List[np.ndarray]) -> tuple:
         """
@@ -689,9 +685,7 @@ class QREContinuation:
             principal_branch = self.trace_branch(
                 centroid_point, 
                 centroid_tangent, 
-                lambda_max,
-                branches=branches,
-                visited=visited
+                lambda_max
             )
             
             if len(principal_branch) > 1:
@@ -713,7 +707,7 @@ class QREContinuation:
             start_lambda = self.NASH_START_LAMBDA
             branch_found = False
             
-            for attempt in range(self.NASH_MAX_ATTEMPTS):
+            for _ in range(self.NASH_MAX_ATTEMPTS):
                 if branch_found:
                     break
                     
@@ -751,9 +745,7 @@ class QREContinuation:
                         nash_tangent,
                         lambda_max,
                         initial_step=0.1,  # Larger step for Nash branches
-                        max_steps=5000,
-                        branches=branches,
-                        visited=visited
+                        max_steps=5000
                     )
                     
                     if len(nash_branch) > self.MIN_BRANCH_LENGTH:

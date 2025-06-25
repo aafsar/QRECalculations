@@ -7,8 +7,6 @@ from .continuation import QREContinuation
 
 def plot_qre_branches(payoff_matrix: np.ndarray, 
                      lambda_range: Tuple[float, float] = (0.0, 10.0),
-                     num_initial_points: int = 20,
-                     figsize: Tuple[int, int] = (12, 8),
                      title: Optional[str] = None) -> plt.Figure:
     """
     Plot QRE branches for a given game matrix.
@@ -16,8 +14,6 @@ def plot_qre_branches(payoff_matrix: np.ndarray,
     Args:
         payoff_matrix: The payoff matrix for the game
         lambda_range: Range of lambda values to explore (min, max)
-        num_initial_points: Number of initial points to try for finding branches
-        figsize: Figure size for the plot
         title: Optional title for the plot
         
     Returns:
@@ -27,7 +23,7 @@ def plot_qre_branches(payoff_matrix: np.ndarray,
     qre = QREContinuation(payoff_matrix)
     
     # Find and trace branches
-    lambda_min, lambda_max = lambda_range
+    _, lambda_max = lambda_range
     branches_raw = qre.find_all_branches(lambda_max=lambda_max)
     
     # Convert QREPoint objects to tuples of (lambda, strategy)
@@ -113,15 +109,13 @@ def plot_qre_branches(payoff_matrix: np.ndarray,
 
 
 def plot_multiple_games(games: List[np.ndarray], 
-                       lambda_range: Tuple[float, float] = (0.0, 10.0),
-                       cols: int = 2) -> List[plt.Figure]:
+                       lambda_range: Tuple[float, float] = (0.0, 10.0)) -> List[plt.Figure]:
     """
     Plot QRE branches for multiple games.
     
     Args:
         games: List of payoff matrices
         lambda_range: Range of lambda values to explore
-        cols: Number of columns in the subplot grid
         
     Returns:
         List of matplotlib Figure objects
