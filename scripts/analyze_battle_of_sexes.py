@@ -8,8 +8,8 @@ import sys
 import os
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'src'))
 
-from qre_continuation import QREContinuation
-from nash_pygambit import find_nash_with_pygambit
+from src.qre.continuation import QREContinuation
+from src.qre.nash import find_nash_with_pygambit
 import matplotlib.pyplot as plt
 
 
@@ -54,7 +54,7 @@ def main():
     qre_solver = QREContinuation(payoff_matrix)
     
     # Find all branches
-    branches = qre_solver.find_all_branches(nash_equilibria, lambda_max=50.0)
+    branches = qre_solver.find_all_branches(lambda_max=50.0)
     print(f"\nFound {len(branches)} QRE branches")
     
     # Analyze each branch
@@ -140,9 +140,10 @@ def main():
         pi2_vals = [p.pi[1] for p in branch]
         lambda_vals = [p.lambda_val for p in branch]
         
+        sc = ax1.scatter(pi1_vals, pi2_vals, s=5, label=f'Branch {i+1}')
         # Color by lambda value
-        sc = ax1.scatter(pi1_vals, pi2_vals,
-                         s=5, label=f'Branch {i+1}')
+        #sc = ax1.scatter(pi1_vals, pi2_vals, c=lambda_vals,
+        #                 s=5, cmap='viridis', alpha=0.7, label=f'Branch {i+1}')
     
     ax1.set_xlabel('π₁')
     ax1.set_ylabel('π₂')
@@ -174,6 +175,10 @@ def main():
     ax2.set_title('QRE Verification Error by Lambda')
     ax2.grid(True, alpha=0.3)
     """
+    # Add colorbar
+    # cbar = plt.colorbar(sc, ax=ax1)
+    # cbar.set_label('λ (lambda)')
+    
     ax1.legend()
     
     plt.tight_layout()

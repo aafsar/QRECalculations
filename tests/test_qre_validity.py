@@ -9,8 +9,8 @@ import sys
 import os
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'src'))
 
-from qre_continuation import QREContinuation
-from nash_pygambit import find_nash_with_pygambit
+from src.qre.continuation import QREContinuation
+from src.qre.nash import find_nash_with_pygambit
 import matplotlib.pyplot as plt
 
 

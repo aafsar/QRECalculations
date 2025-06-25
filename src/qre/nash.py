@@ -9,7 +9,7 @@ from typing import List
 
 def find_nash_with_pygambit(payoff_matrix: np.ndarray) -> List[np.ndarray]:
     """
-    Find all Nash equilibria using pygambit for a symmetric 3x3 game.
+    Find all symmetric Nash equilibria using pygambit for a symmetric 3x3 game.
     
     Parameters:
     -----------
@@ -19,7 +19,7 @@ def find_nash_with_pygambit(payoff_matrix: np.ndarray) -> List[np.ndarray]:
     Returns:
     --------
     List[np.ndarray]
-        List of Nash equilibria, each as a numpy array of probabilities
+        List of symmetric Nash equilibria, each as a numpy array of probabilities
     """
     # Create the game in pygambit
     g = gbt.Game.from_arrays(payoff_matrix, payoff_matrix.T)
@@ -32,18 +32,21 @@ def find_nash_with_pygambit(payoff_matrix: np.ndarray) -> List[np.ndarray]:
     
     # Access the equilibria from the result object
     for profile in nash_result.equilibria:
-        # Extract player 1's strategy (symmetric game, so both players have same strategy)
-        player1_strategy = convert_pygambit_profile_to_array(profile, g, player_index=0)
+        # Extract both players' strategies
+        player1_strategy, player2_strategy = convert_pygambit_profile_to_arrays(profile, g)
         
-        # Check if this equilibrium is already in our list (avoid duplicates)
-        is_duplicate = False
-        for existing in nash_equilibria:
-            if np.linalg.norm(existing - player1_strategy) < 1e-4:
-                is_duplicate = True
-                break
-        
-        if not is_duplicate:
-            nash_equilibria.append(player1_strategy)
+        # Check if this is a symmetric equilibrium
+        if np.linalg.norm(player1_strategy - player2_strategy) < 1e-4:
+            # This is a symmetric Nash equilibrium
+            # Check if this equilibrium is already in our list (avoid duplicates)
+            is_duplicate = False
+            for existing in nash_equilibria:
+                if np.linalg.norm(existing - player1_strategy) < 1e-4:
+                    is_duplicate = True
+                    break
+            
+            if not is_duplicate:
+                nash_equilibria.append(player1_strategy)
     
     return nash_equilibria
 
@@ -80,6 +83,30 @@ def convert_pygambit_profile_to_array(profile, game, player_index=0, cleanup_tol
         strategy = strategy / np.sum(strategy)  # Renormalize
     
     return strategy
+
+
+def convert_pygambit_profile_to_arrays(profile, game, cleanup_tol=1e-10) -> tuple:
+    """
+    Convert a pygambit mixed strategy profile to numpy arrays for both players.
+    
+    Parameters:
+    -----------
+    profile : pygambit MixedStrategyProfile
+        The profile to convert
+    game : pygambit Game
+        The game object
+    cleanup_tol : float
+        Threshold below which probabilities are set to zero
+    
+    Returns:
+    --------
+    tuple[np.ndarray, np.ndarray]
+        Strategies for player 1 and player 2 as numpy arrays
+    """
+    player1_strategy = convert_pygambit_profile_to_array(profile, game, player_index=0, cleanup_tol=cleanup_tol)
+    player2_strategy = convert_pygambit_profile_to_array(profile, game, player_index=1, cleanup_tol=cleanup_tol)
+    
+    return player1_strategy, player2_strategy
 
 
 def verify_nash_equilibrium(payoff_matrix: np.ndarray, strategy: np.ndarray, tol: float = 1e-10) -> bool:

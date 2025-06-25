@@ -10,7 +10,7 @@ import sys
 import os
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'src'))
 
-from qre_continuation import QREContinuation
+from src.qre.continuation import QREContinuation
 
 
 class TestAnalyticalJacobian:
